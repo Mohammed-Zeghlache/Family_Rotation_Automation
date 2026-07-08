@@ -1711,7 +1711,7 @@ function initWhatsApp() {
     authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth/session' }),
     puppeteer: {
       headless: 'new',
-      executablePath: '/usr/bin/google-chrome', // Render's pre-installed Chrome
+      // No executablePath - let Puppeteer find Chrome automatically
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -1755,7 +1755,6 @@ function initWhatsApp() {
     console.log(`📱 Will send to ${PHONE_NUMBERS.length} number(s)`);
     console.log('🎉 Connection established successfully!');
     
-    // Execute pending send if exists
     if (pendingSend) {
       console.log('📤 Executing pending PDF send...');
       const { month, year } = pendingSend;
@@ -2152,7 +2151,7 @@ async function renderPDF(month, year, schedule) {
   
   const browser = await puppeteer.launch({
     headless: 'new',
-    executablePath: '/usr/bin/google-chrome', // Render's pre-installed Chrome
+    // No executablePath - let Puppeteer find Chrome automatically
     args: [
       '--no-sandbox', 
       '--disable-setuid-sandbox',
@@ -2222,7 +2221,6 @@ function getNextMonthYear() {
 async function sendScheduleFor(month, year) {
   console.log(`📅 Generating PDF for ${MONTH_NAMES[month - 1]} ${year}...`);
 
-  // If WhatsApp is not ready, store the request for later
   if (!isReady) {
     console.log('⏳ WhatsApp not ready yet. 📌 PDF queued - will send when WhatsApp connects');
     pendingSend = { month, year };
@@ -2253,7 +2251,6 @@ function scheduleOneTimeSend() {
   
   const sendAt = process.env.SEND_AT;
   
-  // If SEND_AT is set, schedule for that time
   if (sendAt) {
     const targetDate = new Date(sendAt);
     if (Number.isNaN(targetDate.getTime())) {
@@ -2286,7 +2283,6 @@ function scheduleOneTimeSend() {
     console.log('📤 No SEND_AT set. Will send next month PDF on startup when WhatsApp is ready...');
   }
   
-  // Send next month's PDF immediately (or when WhatsApp is ready)
   oneTimeScheduled = true;
   const { month, year } = getNextMonthYear();
   sendScheduleFor(month, year);
@@ -2297,7 +2293,7 @@ function scheduleOneTimeSend() {
 // ============================================================
 
 cron.schedule(
-  '0 20 9 * *',  // 9th of every month at 8:00 PM (20:00)
+  '0 20 9 * *',
   async () => {
     const { month, year } = getNextMonthYear();
     console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF at 8 PM`);
