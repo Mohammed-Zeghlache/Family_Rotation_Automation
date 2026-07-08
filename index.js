@@ -43,8 +43,21 @@ console.log(`📱 Loaded ${PHONE_NUMBERS.length} phone number(s)`);
 //  BROWSER DETECTION
 // ============================================================
 
+// const CHROME_CANDIDATES = [
+//   process.env.PUPPETEER_EXECUTABLE_PATH,
+//   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+//   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+//   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+//   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+//   '/usr/bin/google-chrome',
+//   '/usr/bin/chromium-browser',
+// ];
+
+
 const CHROME_CANDIDATES = [
   process.env.PUPPETEER_EXECUTABLE_PATH,
+  '/opt/render/project/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome',
+  '/opt/render/project/.cache/puppeteer/chrome/linux-*/chrome/chrome',
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
