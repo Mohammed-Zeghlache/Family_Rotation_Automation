@@ -2364,17 +2364,6 @@
 
 
 
-
-
-
-
-
-
-
-
-
-
-
 require('dotenv').config();
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
@@ -2382,51 +2371,7 @@ const qrcode = require('qrcode-terminal');
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
-const puppeteer = require('puppeteer');
-const { execSync } = require('child_process');
-
-// ============================================================
-//  FIND CHROME ON RENDER
-// ============================================================
-
-let CHROME_PATH = null;
-
-function findChrome() {
-  if (CHROME_PATH) return CHROME_PATH;
-  
-  const possiblePaths = [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/opt/google/chrome/chrome',
-  ];
-
-  for (const p of possiblePaths) {
-    if (p && fs.existsSync(p)) {
-      console.log(`✅ Found Chrome at: ${p}`);
-      CHROME_PATH = p;
-      return p;
-    }
-  }
-
-  // Try using 'which' command
-  try {
-    const which = execSync('which google-chrome || which google-chrome-stable || which chromium || which chromium-browser', { stdio: 'pipe' }).toString().trim();
-    if (which && fs.existsSync(which)) {
-      console.log(`✅ Found Chrome via which: ${which}`);
-      CHROME_PATH = which;
-      return which;
-    }
-  } catch (e) {}
-
-  console.log('❌ Chrome not found! Will let Puppeteer try to find it.');
-  return null;
-}
-
-// Try to find Chrome on startup
-findChrome();
+const pdf = require('html-pdf');
 
 // ============================================================
 //  CONFIG
@@ -2532,36 +2477,25 @@ function initWhatsApp() {
     isReady = false;
   }
 
-  // Get Chrome path or let Puppeteer find it
-  const chromePath = findChrome();
-
-  const puppeteerConfig = {
-    headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-extensions',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-    ],
-    defaultViewport: null,
-  };
-
-  // Only add executablePath if we found Chrome
-  if (chromePath) {
-    puppeteerConfig.executablePath = chromePath;
-    console.log(`🔧 Using Chrome at: ${chromePath}`);
-  }
-
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth/session' }),
-    puppeteer: puppeteerConfig,
+    puppeteer: {
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-extensions',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+      ],
+      defaultViewport: null,
+    },
     webVersionCache: {
       type: 'remote',
       remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1018732221.html',
@@ -2978,47 +2912,31 @@ function generateCalendarHTML(month, year, schedule) {
 }
 
 // ============================================================
-//  PDF GENERATION
+//  PDF GENERATION USING HTML-PDF (NO CHROME NEEDED!)
 // ============================================================
 
 async function renderPDF(month, year, schedule) {
   const html = generateCalendarHTML(month, year, schedule);
   
-  // Get Chrome path or let Puppeteer find it
-  const chromePath = findChrome();
-  
-  const launchOptions = {
-    headless: 'new',
-    args: [
-      '--no-sandbox', 
-      '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--disable-dev-shm-usage'
-    ],
-  };
-
-  // Only add executablePath if we found Chrome
-  if (chromePath) {
-    launchOptions.executablePath = chromePath;
-    console.log(`🔧 PDF render using Chrome at: ${chromePath}`);
-  }
-
-  const browser = await puppeteer.launch(launchOptions);
-
-  try {
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-
-    const pdfBuffer = await page.pdf({
+  return new Promise((resolve, reject) => {
+    pdf.create(html, {
       format: 'A4',
       printBackground: true,
-      margin: { top: '20px', bottom: '20px', left: '20px', right: '20px' },
+      margin: {
+        top: '20px',
+        bottom: '20px',
+        left: '20px',
+        right: '20px'
+      }
+    }).toBuffer((err, buffer) => {
+      if (err) {
+        console.error('❌ PDF generation error:', err.message);
+        reject(err);
+      } else {
+        resolve(buffer);
+      }
     });
-
-    return pdfBuffer;
-  } finally {
-    await browser.close();
-  }
+  });
 }
 
 // ============================================================
@@ -3159,7 +3077,6 @@ app.get('/api/health', (req, res) => {
     phones: PHONE_NUMBERS.length,
     whatsappReady: isReady,
     hasPendingSend: !!pendingSend,
-    chromePath: CHROME_PATH,
   });
 });
 
@@ -3200,12 +3117,17 @@ app.listen(PORT, () => {
   const { month, year } = getNextMonthYear();
   console.log(`\n📤 Will send ${MONTH_NAMES[month - 1]} ${year} PDF on the 9th of each month at 8 PM`);
   console.log(`   (or when WhatsApp connects if scheduled time has passed)`);
-  if (CHROME_PATH) {
-    console.log(`🔧 Chrome path: ${CHROME_PATH}`);
-  } else {
-    console.log('🔧 Chrome will be auto-detected by Puppeteer');
-  }
-  console.log('');
+  console.log(`📄 Using html-pdf - NO Chrome required!\n`);
   setTimeout(initWhatsApp, 2000);
   scheduleOneTimeSend();
 });
+
+
+
+
+
+
+
+
+
+
