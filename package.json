@@ -4,17 +4,14 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "dev": "nodemon index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.22.2",
+    "html-pdf": "^3.0.1",
     "node-cron": "^4.5.0",
-    "puppeteer": "^22.0.0",
-    "puppeteer-core": "^22.0.0",
-    "@puppeteer/browsers": "^2.0.0"
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.23.0"
   },
