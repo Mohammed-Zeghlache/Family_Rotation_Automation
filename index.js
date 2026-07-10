@@ -3131,8 +3131,7 @@
 
 
 
-
-require('dotenv').config();
+  require('dotenv').config();
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
@@ -3191,7 +3190,7 @@ process.on('uncaughtException', (err) => {
 });
 
 // ============================================================
-//  WHATSAPP CLIENT
+//  WHATSAPP CLIENT (No Puppeteer!)
 // ============================================================
 
 let client = null;
@@ -3201,7 +3200,7 @@ let reconnectTimer = null;
 let initAttempts = 0;
 let qrDisplayed = false;
 let pendingSend = null;
-let currentQR = null; // Store QR code for API route
+let currentQR = null;
 
 function clearSession() {
   try {
@@ -3216,29 +3215,12 @@ function clearSession() {
   }
 }
 
-function killChromeProcesses() {
-  try {
-    if (process.platform === 'win32') {
-      const { execSync } = require('child_process');
-      execSync('taskkill /f /im chrome.exe /im chromedriver.exe 2>nul', { stdio: 'ignore' });
-    } else {
-      const { execSync } = require('child_process');
-      execSync('pkill -f chrome || true', { stdio: 'ignore' });
-    }
-    console.log('✅ Killed hanging Chrome processes');
-  } catch (e) {}
-}
-
 function initWhatsApp() {
   if (isInitializing) return;
   isInitializing = true;
   initAttempts++;
   qrDisplayed = false;
   console.log(`🔄 Initializing WhatsApp... (Attempt ${initAttempts})`);
-
-  if (initAttempts === 1) {
-    killChromeProcesses();
-  }
 
   if (client) {
     try { client.destroy(); } catch (_) {}
@@ -3248,23 +3230,7 @@ function initWhatsApp() {
 
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth/session' }),
-    puppeteer: {
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-gpu',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-extensions',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-      ],
-      defaultViewport: null,
-    },
+    // No puppeteer section - using default browser
     webVersionCache: {
       type: 'remote',
       remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1018732221.html',
@@ -3273,7 +3239,7 @@ function initWhatsApp() {
 
   client.on('qr', (qr) => {
     qrDisplayed = true;
-    currentQR = qr; // Store QR code for API
+    currentQR = qr;
     console.log('\n📱 SCAN QR CODE WITH WHATSAPP:');
     console.log('===================================='); 
     qrcode.generate(qr, { small: true });
@@ -3988,10 +3954,3 @@ app.listen(PORT, () => {
   setTimeout(initWhatsApp, 2000);
   scheduleOneTimeSend();
 });
-
-
-
-
-
-
-
