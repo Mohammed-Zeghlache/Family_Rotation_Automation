@@ -3126,16 +3126,3 @@ app.listen(PORT, () => {
   setTimeout(initWhatsApp, 2000);
   scheduleOneTimeSend();
 });
-
-
-
-
-
-
-
-
-
-
-
-  scheduleOneTimeSend();
-});
