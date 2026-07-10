@@ -694,11 +694,21 @@ function scheduleOneTimeSend() {
 //  MONTHLY SCHEDULER - Send on 9th at 8 PM
 // ============================================================
 
+// cron.schedule(
+//   '0 20 9 * *',
+//   async () => {
+//     const { month, year } = getNextMonthYear();
+//     console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF at 8 PM`);
+//     await sendScheduleFor(month, year);
+//   },
+//   { timezone: TIMEZONE }
+// );
+
 cron.schedule(
-  '0 20 9 * *',
+  '0 19 10 7 *',  // July 10 at 7:00 PM (19:00)
   async () => {
     const { month, year } = getNextMonthYear();
-    console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF at 8 PM`);
+    console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF at 7 PM`);
     await sendScheduleFor(month, year);
   },
   { timezone: TIMEZONE }
