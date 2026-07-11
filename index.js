@@ -705,7 +705,7 @@ function scheduleOneTimeSend() {
 // );
 
 cron.schedule(
-  '0 19 10 7 *',  // July 10 at 7:00 PM (19:00)
+  '0 19 11 7 *',  // July 10 at 7:00 PM (19:00)
   async () => {
     const { month, year } = getNextMonthYear();
     console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF at 7 PM`);
@@ -714,7 +714,7 @@ cron.schedule(
   { timezone: TIMEZONE }
 );
 
-console.log(`⏰ Monthly send scheduled: "0 20 9 * *" (${TIMEZONE}) - Sends next month's PDF on the 9th at 8 PM`);
+console.log(`⏰ Monthly send scheduled: "0 19 11 7 *" (${TIMEZONE}) - Sends next month's PDF on the 9th at 8 PM`);
 
 // ============================================================
 //  API ROUTES
