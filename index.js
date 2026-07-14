@@ -705,7 +705,7 @@ function scheduleOneTimeSend() {
 // );
 
 cron.schedule(
-  '14 19 14 7 *'  // July 14 at 7:14 PM (19:14)
+  '17 19 14 7 *'  // July 14 at 7:17 PM (19:17)
   // '0 19 14 7 *',  // July 14 at 7:00 PM (19:00)
   async () => {
     const { month, year } = getNextMonthYear();
