@@ -852,7 +852,7 @@ app.get('/api/schedule/preview', (req, res) => {
 //  START SERVER
 // ============================================================
 
-app.listen(PORT'0.0.0.0', () => {
+app.listen(PORT,'0.0.0.0', () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📱 Configured ${PHONE_NUMBERS.length} phone number(s)`);
   console.log(`👀 Preview the calendar at /api/schedule/preview`);
