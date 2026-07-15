@@ -705,17 +705,16 @@ function scheduleOneTimeSend() {
 // );
 
 cron.schedule(
-  '17 19 14 7 *'  // July 14 at 7:17 PM (19:17)
-  // '0 19 14 7 *',  // July 14 at 7:00 PM (19:00)
+  '0 12 15 7 *',  // July 15 at 12:00 PM
   async () => {
     const { month, year } = getNextMonthYear();
-    console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF at 7 PM`);
+    console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF at 12:00 PM`);
     await sendScheduleFor(month, year);
   },
   { timezone: TIMEZONE }
 );
 
-console.log(`⏰ Monthly send scheduled: "0 19 11 7 *" (${TIMEZONE}) - Sends next month's PDF on the 9th at 8 PM`);
+console.log(`⏰ Monthly send scheduled: "0 12 15 7 *" (${TIMEZONE}) - Sends next month's PDF on the 9th at 8 PM`);
 
 // ============================================================
 //  API ROUTES
