@@ -695,7 +695,7 @@ function scheduleOneTimeSend() {
 // ============================================================
 
 cron.schedule(
-  '15 12 15 7 *',  // July 15 at 12:15 PM
+  '25 12 15 7 *',  // July 15 at 12:15 PM
   async () => {
     const { month, year } = getNextMonthYear();
     console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF at 12:15 PM`);
