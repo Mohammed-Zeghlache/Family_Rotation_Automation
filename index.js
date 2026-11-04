@@ -1,11 +1,10 @@
 require('dotenv').config();
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const qrcodeTerminal = require('qrcode-terminal');
+const QRCode = require('qrcode');
 const cron = require('node-cron');
 const fs = require('fs');
-const path = require('path');
-const pdf = require('html-pdf');
 
 // ============================================================
 //  CONFIG
@@ -17,13 +16,25 @@ app.use(express.json());
 const PORT = process.env.PORT || 3001;
 const TIMEZONE = process.env.TIMEZONE || 'Africa/Algiers';
 
-// Default month/year for sending
-const DEFAULT_SEND_MONTH = Number(process.env.SEND_MONTH) || 7;  // July
-const DEFAULT_SEND_YEAR = Number(process.env.SEND_YEAR) || 2026;
+// Where WhatsApp session is stored. On Render, point this to a persistent disk
+// (e.g. /var/data/wwebjs_auth) or you will have to scan the QR after every restart.
+const SESSION_PATH = process.env.SESSION_PATH || './.wwebjs_auth';
 
-const PHONE_NUMBERS = [
-  process.env.PHONE_1,
-].filter(Boolean);
+// Optional: protects /api/qr and /api/schedule/send  (use ?key=XXXX or header x-api-key)
+const API_KEY = process.env.API_KEY || '';
+
+// Monthly cron (default: 9th of every month at 20:00)
+const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '0 20 9 * *';
+
+// Set SEND_ON_START=true to send next month's PDF once WhatsApp is ready after boot
+const SEND_ON_START = process.env.SEND_ON_START === 'true';
+
+// PHONE_1, PHONE_2, ... PHONE_5  (international format, e.g. +213555123456)
+const PHONE_NUMBERS = [1, 2, 3, 4, 5]
+  .map((i) => process.env[`PHONE_${i}`])
+  .filter(Boolean)
+  .map((p) => p.replace(/\D/g, ''))
+  .filter(Boolean);
 
 const MEMBERS = ['Fathi', 'Fouziya', 'Mejda', 'Hamza'];
 const ROTATION_START_DATE = new Date(2026, 5, 30);
@@ -43,6 +54,9 @@ const MONTH_NAMES = [
 ];
 
 console.log(`📱 Loaded ${PHONE_NUMBERS.length} phone number(s)`);
+if (PHONE_NUMBERS.length === 0) {
+  console.log('⚠️  No phone numbers! Set PHONE_1 in your Render environment variables.');
+}
 
 // ============================================================
 //  CRASH PREVENTION
@@ -56,6 +70,10 @@ process.on('uncaughtException', (err) => {
   console.error('⚠️  Uncaught exception:', err?.message || err);
 });
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ============================================================
 //  WHATSAPP CLIENT
 // ============================================================
@@ -65,16 +83,18 @@ let isReady = false;
 let isInitializing = false;
 let reconnectTimer = null;
 let initAttempts = 0;
-let qrDisplayed = false;
 let pendingSend = null;
-let currentQR = null; // Store QR code for API route
+let currentQR = null;
+let isSending = false;
 
 function clearSession() {
   try {
-    const sessionPath = './.wwebjs_auth/session';
-    if (fs.existsSync(sessionPath)) {
+    if (fs.existsSync(SESSION_PATH)) {
       console.log('🗑️  Clearing old session...');
-      fs.rmSync(sessionPath, { recursive: true, force: true });
+      // delete the contents (not the folder itself - it may be a mounted disk)
+      for (const entry of fs.readdirSync(SESSION_PATH)) {
+        fs.rmSync(`${SESSION_PATH}/${entry}`, { recursive: true, force: true });
+      }
       console.log('✅ Session cleared!');
     }
   } catch (e) {
@@ -84,11 +104,10 @@ function clearSession() {
 
 function killChromeProcesses() {
   try {
+    const { execSync } = require('child_process');
     if (process.platform === 'win32') {
-      const { execSync } = require('child_process');
       execSync('taskkill /f /im chrome.exe /im chromedriver.exe 2>nul', { stdio: 'ignore' });
     } else {
-      const { execSync } = require('child_process');
       execSync('pkill -f chrome || true', { stdio: 'ignore' });
     }
     console.log('✅ Killed hanging Chrome processes');
@@ -99,12 +118,9 @@ function initWhatsApp() {
   if (isInitializing) return;
   isInitializing = true;
   initAttempts++;
-  qrDisplayed = false;
   console.log(`🔄 Initializing WhatsApp... (Attempt ${initAttempts})`);
 
-  if (initAttempts === 1) {
-    killChromeProcesses();
-  }
+  if (initAttempts === 1) killChromeProcesses();
 
   if (client) {
     try { client.destroy(); } catch (_) {}
@@ -113,9 +129,10 @@ function initWhatsApp() {
   }
 
   client = new Client({
-    authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth/session' }),
+    authStrategy: new LocalAuth({ dataPath: SESSION_PATH }),
     puppeteer: {
       headless: 'new',
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -131,48 +148,45 @@ function initWhatsApp() {
       ],
       defaultViewport: null,
     },
-    webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1018732221.html',
-    },
+    // NOTE: the old pinned webVersionCache (wppconnect 2.3000.1018732221) was removed.
+    // Keep whatsapp-web.js updated instead:  npm i whatsapp-web.js@latest
   });
 
   client.on('qr', (qr) => {
-    qrDisplayed = true;
-    currentQR = qr; // Store QR code for API
+    currentQR = qr;
     console.log('\n📱 SCAN QR CODE WITH WHATSAPP:');
-    console.log('===================================='); 
-    qrcode.generate(qr, { small: true });
-    console.log('====================================');
+    qrcodeTerminal.generate(qr, { small: true });
     console.log('1. Open WhatsApp on your phone');
     console.log('2. Settings → Linked Devices → Link a Device');
-    console.log('3. Scan the QR code above\n');
-    console.log('🔗 Or visit /api/qr to scan from your browser\n');
+    console.log('3. Scan the QR code above');
+    console.log('🔗 Or open /api/qr in your browser\n');
   });
 
   client.on('authenticated', () => {
     console.log('✅ Authenticated! Session saved.');
   });
 
-  client.on('ready', () => {
+  client.on('ready', async () => {
     isReady = true;
     isInitializing = false;
+    currentQR = null;
     console.log('✅ WhatsApp READY!');
-    console.log(`📱 Will send to ${PHONE_NUMBERS.length} number(s)`);
-    console.log('🎉 Connection established successfully!');
-    
+
+    // give WhatsApp Web a few seconds to finish loading before sending
+    await sleep(5000);
+
     if (pendingSend) {
       console.log('📤 Executing pending PDF send...');
       const { month, year } = pendingSend;
       pendingSend = null;
-      sendScheduleFor(month, year);
+      await sendScheduleFor(month, year);
     }
   });
 
   client.on('auth_failure', (msg) => {
     console.error('❌ Auth failed:', msg);
     isInitializing = false;
-    qrDisplayed = false;
+    isReady = false;
     currentQR = null;
     clearSession();
     setTimeout(() => initWhatsApp(), 5000);
@@ -182,7 +196,6 @@ function initWhatsApp() {
     console.log('⚠️  Disconnected:', reason);
     isReady = false;
     isInitializing = false;
-    qrDisplayed = false;
     currentQR = null;
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => initWhatsApp(), 10000);
@@ -191,6 +204,7 @@ function initWhatsApp() {
   client.initialize().catch((err) => {
     console.error('❌ Init failed:', err.message);
     isInitializing = false;
+    isReady = false;
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => initWhatsApp(), 10000);
   });
@@ -216,38 +230,19 @@ function generateSchedule(month, year) {
   return schedule;
 }
 
-// ============================================================
-//  WHATSAPP SENDING HELPERS - PDF ONLY
-// ============================================================
-
-async function sendMediaToAll(media, caption) {
-  if (!isReady) {
-    console.log('⏳ WhatsApp not ready, skipping media send');
-    return [];
+function getNextMonthYear() {
+  const now = new Date();
+  let month = now.getMonth() + 2; // getMonth() is 0-based, +1 for real month, +1 for next
+  let year = now.getFullYear();
+  if (month > 12) {
+    month = 1;
+    year += 1;
   }
-
-  const results = [];
-  for (const phone of PHONE_NUMBERS) {
-    try {
-      const chatId = phone.replace('+', '') + '@c.us';
-      await client.sendMessage(chatId, media, { caption });
-      console.log(`✅ PDF sent to ${phone}`);
-      results.push({ phone, success: true });
-    } catch (error) {
-      console.error(`❌ Error sending PDF to ${phone}:`, error.message);
-      results.push({ phone, success: false, error: error.message });
-    }
-    await sleep(2000);
-  }
-  return results;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return { month, year };
 }
 
 // ============================================================
-//  CALENDAR HTML - CLEAN & MODERN DESIGN
+//  CALENDAR HTML
 // ============================================================
 
 function generateCalendarHTML(month, year, schedule) {
@@ -267,8 +262,7 @@ function generateCalendarHTML(month, year, schedule) {
 
   let cells = '';
   let dateCounter = 1;
-  const totalCells = firstDay + daysInMonth;
-  const totalRows = Math.ceil(totalCells / 7);
+  const totalRows = Math.ceil((firstDay + daysInMonth) / 7);
 
   for (let r = 0; r < totalRows; r++) {
     cells += '<tr>';
@@ -294,7 +288,7 @@ function generateCalendarHTML(month, year, schedule) {
                 ? `<div class="person-badge" style="background:${color.bg};color:${color.fg}">${person}</div>`
                 : ''
             }
-            ${isNotStarted ? '<div class="pending">⏳</div>' : ''}
+            ${isNotStarted ? '<div class="pending">-</div>' : ''}
           </td>`;
         dateCounter++;
       }
@@ -309,25 +303,20 @@ function generateCalendarHTML(month, year, schedule) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Family Rotation Calendar</title>
 <style>
-  * {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     background: #f0f2f5;
     padding: 24px;
-    min-height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: center;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   .calendar {
     max-width: 820px;
     width: 100%;
+    margin: 0 auto;
     background: #ffffff;
     border-radius: 24px;
     padding: 32px 28px 28px;
@@ -341,198 +330,64 @@ function generateCalendarHTML(month, year, schedule) {
     border-radius: 16px;
     margin-bottom: 28px;
   }
+  .header h1 { font-size: 26px; font-weight: 700; color: #ffffff; letter-spacing: 0.5px; }
+  .header h2 { font-size: 17px; font-weight: 400; color: rgba(255,255,255,0.92); margin-top: 4px; letter-spacing: 0.3px; }
 
-  .header h1 {
-    font-size: 26px;
-    font-weight: 700;
-    color: #ffffff;
-    letter-spacing: 0.5px;
-  }
-
-  .header h2 {
-    font-size: 17px;
-    font-weight: 400;
-    color: rgba(255, 255, 255, 0.92);
-    margin-top: 4px;
-    letter-spacing: 0.3px;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: separate;
-    border-spacing: 4px;
-  }
+  table { width: 100%; border-collapse: separate; border-spacing: 4px; }
 
   th {
-    color: #6b7280;
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    padding: 8px 0 6px;
-    text-align: center;
+    color: #6b7280; font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.08em; padding: 8px 0 6px; text-align: center;
   }
 
   td {
-    background: #fafbfc;
-    border-radius: 12px;
-    height: 72px;
-    width: 14.28%;
-    text-align: center;
-    vertical-align: middle;
-    padding: 6px 4px;
-    transition: background 0.15s ease;
-    position: relative;
+    background: #fafbfc; border-radius: 12px; height: 72px; width: 14.28%;
+    text-align: center; vertical-align: middle; padding: 6px 4px; position: relative;
   }
+  td.empty { background: transparent; }
+  td.weekend { background: #f8f9fa; }
+  td.today { outline: 2.5px solid #f97316; outline-offset: -2.5px; background: #fff7ed; }
+  td.has-person { background: #ffffff; border: 1px solid #f0f0f0; }
 
-  td.empty {
-    background: transparent;
-  }
-
-  td.weekend {
-    background: #f8f9fa;
-  }
-
-  td.today {
-    outline: 2.5px solid #f97316;
-    outline-offset: -2.5px;
-    background: #fff7ed;
-  }
-
-  td.has-person {
-    background: #ffffff;
-  }
-
-  .day-number {
-    font-size: 15px;
-    font-weight: 600;
-    color: #1f2937;
-    line-height: 1.2;
-  }
+  .day-number { font-size: 15px; font-weight: 600; color: #1f2937; line-height: 1.2; }
 
   .person-badge {
-    display: inline-block;
-    margin-top: 4px;
-    padding: 3px 10px;
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    background: #e5e7eb;
-    color: #374151;
+    display: inline-block; margin-top: 4px; padding: 3px 10px; border-radius: 20px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.02em; background: #e5e7eb; color: #374151;
   }
 
-  .pending {
-    margin-top: 4px;
-    font-size: 16px;
-    opacity: 0.5;
-  }
+  .pending { margin-top: 4px; font-size: 16px; opacity: 0.5; }
 
   .legend {
-    display: flex;
-    justify-content: center;
-    gap: 18px;
-    margin-top: 24px;
-    padding-top: 20px;
-    border-top: 1.5px solid #f0f0f0;
-    flex-wrap: wrap;
+    display: flex; justify-content: center; gap: 18px; margin-top: 24px; padding-top: 20px;
+    border-top: 1.5px solid #f0f0f0; flex-wrap: wrap;
   }
+  .legend-item { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 500; color: #374151; }
+  .legend-dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 
-  .legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 13px;
-    font-weight: 500;
-    color: #374151;
-  }
-
-  .legend-dot {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    display: inline-block;
-    flex-shrink: 0;
-  }
-
-  .footer {
-    text-align: center;
-    margin-top: 20px;
-    color: #9ca3af;
-    font-size: 12px;
-    letter-spacing: 0.3px;
-  }
+  .footer { text-align: center; margin-top: 20px; color: #9ca3af; font-size: 12px; letter-spacing: 0.3px; }
 
   @media (max-width: 600px) {
-    body {
-      padding: 12px;
-    }
-
-    .calendar {
-      padding: 16px 12px 18px;
-      border-radius: 16px;
-    }
-
-    .header {
-      padding: 14px 16px;
-      border-radius: 12px;
-    }
-
-    .header h1 {
-      font-size: 20px;
-    }
-
-    .header h2 {
-      font-size: 14px;
-    }
-
-    table {
-      border-spacing: 3px;
-    }
-
-    td {
-      height: 60px;
-      padding: 4px 2px;
-      border-radius: 8px;
-    }
-
-    .day-number {
-      font-size: 13px;
-    }
-
-    .person-badge {
-      font-size: 9px;
-      padding: 2px 7px;
-      margin-top: 2px;
-    }
-
-    .legend {
-      gap: 10px;
-      padding-top: 14px;
-      margin-top: 16px;
-    }
-
-    .legend-item {
-      font-size: 11px;
-      gap: 5px;
-    }
-
-    .legend-dot {
-      width: 10px;
-      height: 10px;
-    }
-
-    th {
-      font-size: 10px;
-      padding: 4px 0;
-    }
+    body { padding: 12px; }
+    .calendar { padding: 16px 12px 18px; border-radius: 16px; }
+    .header { padding: 14px 16px; border-radius: 12px; }
+    .header h1 { font-size: 20px; }
+    .header h2 { font-size: 14px; }
+    table { border-spacing: 3px; }
+    td { height: 60px; padding: 4px 2px; border-radius: 8px; }
+    .day-number { font-size: 13px; }
+    .person-badge { font-size: 9px; padding: 2px 7px; margin-top: 2px; }
+    .legend { gap: 10px; padding-top: 14px; margin-top: 16px; }
+    .legend-item { font-size: 11px; gap: 5px; }
+    .legend-dot { width: 10px; height: 10px; }
+    th { font-size: 10px; padding: 4px 0; }
   }
 </style>
 </head>
 <body>
   <div class="calendar">
     <div class="header">
-      <h1>🏠 Family Rotation</h1>
+      <h1>Family Rotation</h1>
       <h2>${MONTH_NAMES[month - 1]} ${year}</h2>
     </div>
     <table>
@@ -551,166 +406,133 @@ function generateCalendarHTML(month, year, schedule) {
 }
 
 // ============================================================
-//  PDF GENERATION USING HTML-PDF (NO CHROME NEEDED!)
+//  PDF GENERATION - uses the same Chrome that whatsapp-web.js
+//  already runs (no PhantomJS / html-pdf needed)
 // ============================================================
 
 async function renderPDF(month, year, schedule) {
+  if (!client || !client.pupBrowser) {
+    throw new Error('Browser is not available yet');
+  }
+
   const html = generateCalendarHTML(month, year, schedule);
-  
-  return new Promise((resolve, reject) => {
-    pdf.create(html, {
+  const page = await client.pupBrowser.newPage();
+
+  try {
+    await page.setContent(html, { waitUntil: 'load' });
+    await page.emulateMediaType('screen');
+    const pdfData = await page.pdf({
       format: 'A4',
       printBackground: true,
-      margin: {
-        top: '20px',
-        bottom: '20px',
-        left: '20px',
-        right: '20px'
-      }
-    }).toBuffer((err, buffer) => {
-      if (err) {
-        console.error('❌ PDF generation error:', err.message);
-        reject(err);
-      } else {
-        resolve(buffer);
-      }
+      margin: { top: '20px', bottom: '20px', left: '20px', right: '20px' },
     });
-  });
+    return Buffer.from(pdfData);
+  } finally {
+    try { await page.close(); } catch (_) {}
+  }
 }
 
 // ============================================================
-//  SEND PDF ONLY (NO TEXT)
+//  SENDING
 // ============================================================
 
 async function sendPDFToAll(month, year, pdfBuffer) {
-  const filename = `schedule_${month}_${year}.pdf`;
-  const tmpPath = path.join('.', filename);
+  const filename = `Family_Rotation_${MONTH_NAMES[month - 1]}_${year}.pdf`;
+  const media = new MessageMedia('application/pdf', pdfBuffer.toString('base64'), filename);
+  const caption = `📅 ${MONTH_NAMES[month - 1]} ${year} Family Rotation Schedule`;
 
-  try {
-    fs.writeFileSync(tmpPath, pdfBuffer);
-    const base64 = fs.readFileSync(tmpPath).toString('base64');
-    const media = new MessageMedia('application/pdf', base64, filename);
-    return await sendMediaToAll(media, `📅 ${MONTH_NAMES[month - 1]} ${year} Family Rotation Schedule`);
-  } finally {
-    try { fs.unlinkSync(tmpPath); } catch (_) {}
+  const results = [];
+  for (const phone of PHONE_NUMBERS) {
+    try {
+      // Resolve the real WhatsApp ID (also checks the number is on WhatsApp)
+      const numberId = await client.getNumberId(phone);
+      if (!numberId) {
+        console.error(`❌ ${phone} is not registered on WhatsApp`);
+        results.push({ phone, success: false, error: 'Number not registered on WhatsApp' });
+        continue;
+      }
+
+      await client.sendMessage(numberId._serialized, media, {
+        caption,
+        sendMediaAsDocument: true,
+        sendSeen: false, // avoids the "markedUnread" crash in some versions
+      });
+      console.log(`✅ PDF sent to ${phone}`);
+      results.push({ phone, success: true });
+    } catch (error) {
+      console.error(`❌ Error sending PDF to ${phone}:`, error.message);
+      results.push({ phone, success: false, error: error.message });
+    }
+    await sleep(2000);
   }
+  return results;
 }
-
-// ============================================================
-//  GET NEXT MONTH
-// ============================================================
-
-function getNextMonthYear() {
-  const now = new Date();
-  const currentMonth = now.getMonth() + 1;
-  const currentYear = now.getFullYear();
-  
-  let nextMonth = currentMonth + 1;
-  let nextYear = currentYear;
-  
-  if (nextMonth > 12) {
-    nextMonth = 1;
-    nextYear = currentYear + 1;
-  }
-  
-  return { month: nextMonth, year: nextYear };
-}
-
-// ============================================================
-//  MAIN SEND FLOW - PDF ONLY
-// ============================================================
 
 async function sendScheduleFor(month, year) {
-  console.log(`📅 Generating PDF for ${MONTH_NAMES[month - 1]} ${year}...`);
+  console.log(`📅 Preparing PDF for ${MONTH_NAMES[month - 1]} ${year}...`);
 
-  if (!isReady) {
-    console.log('⏳ WhatsApp not ready yet. 📌 PDF queued - will send when WhatsApp connects');
-    pendingSend = { month, year };
-    return;
+  if (PHONE_NUMBERS.length === 0) {
+    return { status: 'failed', error: 'No phone numbers configured (PHONE_1)' };
   }
 
+  if (!isReady) {
+    console.log('⏳ WhatsApp not ready yet. PDF queued - will send when WhatsApp connects');
+    pendingSend = { month, year };
+    return { status: 'queued' };
+  }
+
+  if (isSending) {
+    return { status: 'failed', error: 'Another send is already in progress' };
+  }
+
+  isSending = true;
   try {
     const schedule = generateSchedule(month, year);
     const pdfBuffer = await renderPDF(month, year, schedule);
-    
-    console.log('📤 Sending PDF...');
-    await sendPDFToAll(month, year, pdfBuffer);
-    
-    console.log('✅ PDF sent successfully!');
+    console.log(`📄 PDF generated (${Math.round(pdfBuffer.length / 1024)} KB). Sending...`);
+
+    const results = await sendPDFToAll(month, year, pdfBuffer);
+    const ok = results.some((r) => r.success);
+    console.log(ok ? '✅ PDF sent!' : '❌ PDF was NOT sent to anyone');
+    return { status: ok ? 'sent' : 'failed', results };
   } catch (error) {
-    console.error('❌ Error sending PDF:', error.message);
+    console.error('❌ Error in send flow:', error.message);
+    return { status: 'failed', error: error.message };
+  } finally {
+    isSending = false;
   }
 }
 
 // ============================================================
-//  ONE-TIME SCHEDULED SEND
+//  SCHEDULER
 // ============================================================
 
-let oneTimeScheduled = false;
-
-function scheduleOneTimeSend() {
-  if (oneTimeScheduled) return;
-  
-  const sendAt = process.env.SEND_AT;
-  
-  if (sendAt) {
-    const targetDate = new Date(sendAt);
-    if (Number.isNaN(targetDate.getTime())) {
-      console.log(`⚠️  Invalid SEND_AT value: "${sendAt}"`);
-      console.log('📤 Will send next month PDF on startup instead...');
-      oneTimeScheduled = true;
+if (cron.validate(CRON_SCHEDULE)) {
+  cron.schedule(
+    CRON_SCHEDULE,
+    async () => {
       const { month, year } = getNextMonthYear();
-      sendScheduleFor(month, year);
-      return;
-    }
-
-    const delay = targetDate.getTime() - Date.now();
-    
-    if (delay > 0) {
-      console.log(`⏰ One-time PDF scheduled for: ${targetDate.toLocaleString()}`);
-      const { month, year } = getNextMonthYear();
-      console.log(`📅 Will send ${MONTH_NAMES[month - 1]} ${year} PDF`);
-      oneTimeScheduled = true;
-      
-      setTimeout(async () => {
-        console.log(`📤 Sending scheduled ${MONTH_NAMES[month - 1]} ${year} PDF...`);
-        await sendScheduleFor(month, year);
-        console.log('📌 PDF queued - will send when WhatsApp connects');
-      }, delay);
-      return;
-    } else {
-      console.log('⏰ SEND_AT already passed — sending next month PDF now...');
-    }
-  } else {
-    console.log('📤 No SEND_AT set. Will send next month PDF on startup when WhatsApp is ready...');
-  }
-  
-  oneTimeScheduled = true;
-  const { month, year } = getNextMonthYear();
-  sendScheduleFor(month, year);
+      console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF`);
+      await sendScheduleFor(month, year);
+    },
+    { timezone: TIMEZONE }
+  );
+  console.log(`⏰ Monthly send scheduled: "${CRON_SCHEDULE}" (${TIMEZONE})`);
+} else {
+  console.error(`❌ Invalid CRON_SCHEDULE: "${CRON_SCHEDULE}"`);
 }
-
-// ============================================================
-//  MONTHLY SCHEDULER - Send on 9th at 8 PM
-// ============================================================
-
-cron.schedule(
-  '36 12 15 7 *',  // July 15 at 12:15 PM
-  async () => {
-    const { month, year } = getNextMonthYear();
-    console.log(`📅 Monthly job: sending ${MONTH_NAMES[month - 1]} ${year} PDF at 12:15 PM`);
-    await sendScheduleFor(month, year);
-  },
-  { timezone: TIMEZONE }
-);
-
-console.log(`⏰ Monthly send scheduled: "0 12 15 7 *" (${TIMEZONE}) - Sends next month's PDF on the 9th at 8 PM`);
 
 // ============================================================
 //  API ROUTES
 // ============================================================
 
-// Root route
+function requireKey(req, res, next) {
+  if (!API_KEY) return next();
+  const provided = req.query.key || req.headers['x-api-key'];
+  if (provided === API_KEY) return next();
+  return res.status(401).json({ success: false, error: 'Unauthorized' });
+}
+
 app.get('/', (req, res) => {
   res.json({
     message: '🏠 Family Rotation Automation API is running!',
@@ -720,86 +542,56 @@ app.get('/', (req, res) => {
       health: '/api/health',
       qr: '/api/qr',
       preview: '/api/schedule/preview',
-      send: '/api/schedule/send (POST)'
-    }
+      send: '/api/schedule/send  (GET or POST, optional ?month=12&year=2026)',
+    },
   });
 });
 
-// QR Code route - View QR in browser
-app.get('/api/qr', (req, res) => {
+app.get('/api/qr', requireKey, async (req, res) => {
+  if (isReady) {
+    return res.send('<h2 style="font-family:Arial;text-align:center;margin-top:20vh">✅ WhatsApp is already connected</h2>');
+  }
+
   if (!currentQR) {
     return res.send(`
-      <html>
-        <head><title>QR Code</title></head>
-        <body style="display:flex;justify-content:center;align-items:center;height:100vh;font-family:Arial;">
-          <div style="text-align:center;">
-            <h2>⏳ No QR Code Available</h2>
-            <p>Waiting for WhatsApp to generate QR code...</p>
-            <p>Check the Render logs or refresh in a few seconds.</p>
-          </div>
-        </body>
-      </html>
-    `);
+      <html><head><meta http-equiv="refresh" content="5"></head>
+      <body style="display:flex;justify-content:center;align-items:center;height:100vh;font-family:Arial;">
+        <div style="text-align:center;">
+          <h2>⏳ No QR Code Available yet</h2>
+          <p>Waiting for WhatsApp to generate it... this page refreshes automatically.</p>
+        </div>
+      </body></html>`);
   }
-  
+
+  // QR is generated locally - it is NOT sent to any third-party website
+  const dataUrl = await QRCode.toDataURL(currentQR, { width: 300, margin: 2 });
+
   res.send(`
     <html>
       <head>
         <title>Scan QR Code</title>
+        <meta http-equiv="refresh" content="20">
         <style>
-          body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            flex-direction: column;
-            font-family: Arial, sans-serif;
-            background: #f0f2f5;
-            margin: 0;
-          }
-          .container {
-            background: white;
-            padding: 40px;
-            border-radius: 16px;
-            box-shadow: 0 4px 24px rgba(0,0,0,0.1);
-            text-align: center;
-            max-width: 400px;
-          }
-          img {
-            width: 280px;
-            height: 280px;
-            border-radius: 8px;
-          }
-          h1 { color: #1f2937; font-size: 24px; }
-          p { color: #6b7280; font-size: 14px; }
-          .steps {
-            text-align: left;
-            margin: 16px 0;
-            color: #374151;
-            font-size: 13px;
-            line-height: 1.6;
-          }
-          .status {
-            color: #10b981;
-            font-weight: 600;
-          }
+          body { display:flex; justify-content:center; align-items:center; height:100vh; font-family:Arial,sans-serif; background:#f0f2f5; margin:0; }
+          .container { background:white; padding:40px; border-radius:16px; box-shadow:0 4px 24px rgba(0,0,0,0.1); text-align:center; max-width:400px; }
+          img { width:280px; height:280px; }
+          h1 { color:#1f2937; font-size:24px; }
+          p { color:#6b7280; font-size:14px; }
+          .steps { text-align:left; margin:16px 0; color:#374151; font-size:13px; line-height:1.6; }
         </style>
       </head>
       <body>
         <div class="container">
           <h1>📱 Scan with WhatsApp</h1>
-          <p class="status">✅ QR Code Ready</p>
-          <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(currentQR)}" />
+          <img src="${dataUrl}" />
           <div class="steps">
             <p><strong>1.</strong> Open WhatsApp on your phone</p>
             <p><strong>2.</strong> Settings → Linked Devices → Link a Device</p>
             <p><strong>3.</strong> Scan the QR code above</p>
           </div>
-          <p style="font-size:12px;color:#9ca3af;">After scanning, wait for "WhatsApp READY!" in logs</p>
         </div>
       </body>
-    </html>
-  `);
+    </html>`);
 });
 
 app.get('/api/health', (req, res) => {
@@ -812,45 +604,47 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.post('/api/schedule/send', async (req, res) => {
+async function sendHandler(req, res) {
   try {
-    const { month, year } = req.body || {};
-    const m = Number(month) || DEFAULT_SEND_MONTH;
-    const y = Number(year) || DEFAULT_SEND_YEAR;
+    const src = { ...(req.query || {}), ...(req.body || {}) };
+    const next = getNextMonthYear();
+    const m = Number(src.month) || next.month;
+    const y = Number(src.year) || next.year;
 
-    await sendScheduleFor(m, y);
+    if (m < 1 || m > 12) {
+      return res.status(400).json({ success: false, error: 'month must be 1-12' });
+    }
 
-    res.json({
-      success: true,
-      message: `PDF sent to ${PHONE_NUMBERS.length} number(s)`,
-      month: m,
-      year: y,
-    });
+    const result = await sendScheduleFor(m, y);
+    const code = result.status === 'failed' ? 500 : 200;
+    res.status(code).json({ success: result.status !== 'failed', month: m, year: y, ...result });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
-});
+}
+
+app.route('/api/schedule/send').get(requireKey, sendHandler).post(requireKey, sendHandler);
 
 app.get('/api/schedule/preview', (req, res) => {
-  const m = Number(req.query.month) || DEFAULT_SEND_MONTH;
-  const y = Number(req.query.year) || DEFAULT_SEND_YEAR;
-  const schedule = generateSchedule(m, y);
-  res.send(generateCalendarHTML(m, y, schedule));
+  const next = getNextMonthYear();
+  const m = Number(req.query.month) || next.month;
+  const y = Number(req.query.year) || next.year;
+  res.send(generateCalendarHTML(m, y, generateSchedule(m, y)));
 });
 
 // ============================================================
 //  START SERVER
 // ============================================================
 
-app.listen(PORT,'0.0.0.0', () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📱 Configured ${PHONE_NUMBERS.length} phone number(s)`);
-  console.log(`👀 Preview the calendar at /api/schedule/preview`);
-  console.log(`📱 Scan QR at /api/qr`);
-  const { month, year } = getNextMonthYear();
-  console.log(`\n📤 Will send ${MONTH_NAMES[month - 1]} ${year} PDF on the 9th of each month at 8 PM`);
-  console.log(`   (or when WhatsApp connects if scheduled time has passed)`);
-  console.log(`📄 Using html-pdf - NO Chrome required!\n`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`👀 Preview: /api/schedule/preview   📱 QR: /api/qr`);
+
   setTimeout(initWhatsApp, 2000);
-  scheduleOneTimeSend();
+
+  if (SEND_ON_START) {
+    const { month, year } = getNextMonthYear();
+    console.log(`📤 SEND_ON_START=true → ${MONTH_NAMES[month - 1]} ${year} PDF will be sent once WhatsApp is ready`);
+    pendingSend = { month, year };
+  }
 });
