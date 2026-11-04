@@ -24,13 +24,13 @@ const SESSION_PATH = process.env.SESSION_PATH || './.wwebjs_auth';
 const API_KEY = process.env.API_KEY || '';
 
 // Monthly cron (default: 9th of every month at 20:00)
-const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '0 20 9 * *';
+const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '23 21 4 11 *';
 
 // Set SEND_ON_START=true to send next month's PDF once WhatsApp is ready after boot
 const SEND_ON_START = process.env.SEND_ON_START === 'true';
 
 // PHONE_1, PHONE_2, ... PHONE_5  (international format, e.g. +213555123456)
-const PHONE_NUMBERS = [1, 2, 3, 4, 5]
+const PHONE_NUMBERS = [1]
   .map((i) => process.env[`PHONE_${i}`])
   .filter(Boolean)
   .map((p) => p.replace(/\D/g, ''))
